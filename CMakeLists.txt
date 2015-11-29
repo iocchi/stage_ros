@@ -14,6 +14,9 @@ find_package(catkin REQUIRED
 
 find_package(Boost REQUIRED COMPONENTS system thread)
 
+# Add stage cmake directory in CMAKE_PREFIX_PATH
+# Example: $ export CMAKE_PREFIX_PATH=$CMAKE_PREFIX_PATH:$HOME/lib/stage4/lib64/cmake
+
 find_package(stage REQUIRED)
 
 include_directories(

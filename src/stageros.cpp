@@ -37,6 +37,11 @@
 // libstage
 #include <stage.hh>
 
+// Extended API for GUI control (requires custom Stage)
+#if NEW_GUI_ACCESS
+#include <canvas.hh>
+#endif
+
 // roscpp
 #include <ros/ros.h>
 #include <boost/thread/mutex.hpp>
@@ -48,6 +53,7 @@
 #include <nav_msgs/Odometry.h>
 #include <geometry_msgs/Twist.h>
 #include <rosgraph_msgs/Clock.h>
+#include <std_msgs/String.h>
 
 #include <std_srvs/Empty.h>
 
@@ -58,9 +64,18 @@
 #define DEPTH "depth"
 #define CAMERA_INFO "camera_info"
 #define ODOM "odom"
-#define BASE_SCAN "base_scan"
+
 #define BASE_POSE_GROUND_TRUTH "base_pose_ground_truth"
 #define CMD_VEL "cmd_vel"
+
+// default values
+// Topics
+#define LASER_TOPIC_DEFAULT  "scan"
+// Frames
+#define BASE_FRAME_DEFAULT   "base_frame" 
+#define BASE_FOOTPRINT_FRAME_DEFAULT   "base_footprint_frame" 
+#define LASER_FRAME_DEFAULT  "laser_frame"
+#define CAMERA_FRAME_DEFAULT "camera_frame"
 
 // Our node
 class StageNode
@@ -103,11 +118,16 @@ private:
     // Used to remember initial poses for soft reset
     std::vector<Stg::Pose> initial_poses;
     ros::ServiceServer reset_srv_;
-  
+
+    // Receiving GUI requests  
+    ros::Subscriber guirequest_sub;
+    
     ros::Publisher clock_pub_;
     
     bool isDepthCanonical;
     bool use_model_names;
+
+    std::string base_frame, base_footprint_frame, laser_topic, laser_frame, camera_frame;
 
     // A helper function that is executed for each stage model.  We use it
     // to search for models of interest.
@@ -164,8 +184,24 @@ public:
     // Service callback for soft reset
     bool cb_reset_srv(std_srvs::Empty::Request& request, std_srvs::Empty::Response& response);
 
+    // Callback for GUI request messages
+    void GUIRequest_cb(const boost::shared_ptr<std_msgs::String const>& msg);
+
+#if NEW_GUI_ACCESS
+    // Save a screenshot image of the GUI
+    void Screenshot();
+
+    // Show footprints in the GUI
+    void Footprints();
+
+    // Set simulation speedup
+    void Speedup(double speedup);
+#endif
+
     // The main simulator object
     Stg::World* world;
+    Stg::WorldGui* worldgui;
+
 };
 
 // since stageros is single-threaded, this is OK. revisit if that changes!
@@ -266,6 +302,19 @@ StageNode::cmdvelReceived(int idx, const boost::shared_ptr<geometry_msgs::Twist 
     this->base_last_cmd = this->sim_time;
 }
 
+void StageNode::GUIRequest_cb(const boost::shared_ptr<std_msgs::String const>& msg)
+{
+#if NEW_GUI_ACCESS
+    ROS_INFO_STREAM(msg->data);
+    if (msg->data=="screenshot")
+        Screenshot();
+    else if (msg->data=="footprints")
+        Footprints();
+    else if (msg->data=="speedup")
+        Speedup(2.0);
+#endif
+}
+
 StageNode::StageNode(int argc, char** argv, bool gui, const char* fname, bool use_model_names)
 {
     this->use_model_names = use_model_names;
@@ -279,6 +328,17 @@ StageNode::StageNode(int argc, char** argv, bool gui, const char* fname, bool us
 
     if(!localn.getParam("is_depth_canonical", isDepthCanonical))
         isDepthCanonical = true;
+
+    if(!localn.getParam("base_frame", this->base_frame))
+        this->base_frame = BASE_FRAME_DEFAULT;
+    if(!localn.getParam("base_footprint_frame", this->base_footprint_frame))
+        this->base_footprint_frame = BASE_FOOTPRINT_FRAME_DEFAULT;
+    if(!localn.getParam("laser_topic", this->laser_topic))
+        this->laser_topic = LASER_TOPIC_DEFAULT;
+    if(!localn.getParam("laser_frame", this->laser_frame))
+        this->laser_frame = LASER_FRAME_DEFAULT;
+    if(!localn.getParam("camera_frame", this->camera_frame))
+        this->camera_frame = CAMERA_FRAME_DEFAULT;
 
 
     // We'll check the existence of the world file, because libstage doesn't
@@ -294,10 +354,14 @@ StageNode::StageNode(int argc, char** argv, bool gui, const char* fname, bool us
     // initialize libstage
     Stg::Init( &argc, &argv );
 
-    if(gui)
-        this->world = new Stg::WorldGui(600, 400, "Stage (ROS)");
-    else
+    if(gui) {
+        this->worldgui = new Stg::WorldGui(600, 400, "Stage (ROS)");
+        this->world = this->worldgui;
+    }
+    else {
         this->world = new Stg::World();
+        this->worldgui = NULL;
+    }
 
     // Apparently an Update is needed before the Load to avoid crashes on
     // startup on some systems.
@@ -358,9 +422,9 @@ StageNode::SubscribeModels()
         for (size_t s = 0;  s < new_robot->lasermodels.size(); ++s)
         {
             if (new_robot->lasermodels.size() == 1)
-                new_robot->laser_pubs.push_back(n_.advertise<sensor_msgs::LaserScan>(mapName(BASE_SCAN, r, static_cast<Stg::Model*>(new_robot->positionmodel)), 10));
+                new_robot->laser_pubs.push_back(n_.advertise<sensor_msgs::LaserScan>(mapName(this->laser_topic.c_str(), r, static_cast<Stg::Model*>(new_robot->positionmodel)), 10));
             else
-                new_robot->laser_pubs.push_back(n_.advertise<sensor_msgs::LaserScan>(mapName(BASE_SCAN, r, s, static_cast<Stg::Model*>(new_robot->positionmodel)), 10));
+                new_robot->laser_pubs.push_back(n_.advertise<sensor_msgs::LaserScan>(mapName(this->laser_topic.c_str(), r, s, static_cast<Stg::Model*>(new_robot->positionmodel)), 10));
 
         }
 
@@ -387,6 +451,9 @@ StageNode::SubscribeModels()
     // advertising reset service
     reset_srv_ = n_.advertiseService("reset_positions", &StageNode::cb_reset_srv, this);
 
+    guirequest_sub = n_.subscribe<std_msgs::String>("/stageGUIRequest",10,boost::bind(&StageNode::GUIRequest_cb, this, _1));
+                // n_.subscribe("/stageGUIRequest", 10, &StageNode::GUIRequest_cb, this);
+
     return(0);
 }
 
@@ -399,6 +466,7 @@ StageNode::~StageNode()
 bool
 StageNode::UpdateWorld()
 {
+
     return this->world->UpdateAll();
 }
 
@@ -432,6 +500,7 @@ StageNode::WorldCallback()
         //loop on the laser devices for the current robot
         for (size_t s = 0; s < robotmodel->lasermodels.size(); ++s)
         {
+
             Stg::ModelRanger const* lasermodel = robotmodel->lasermodels[s];
             const std::vector<Stg::ModelRanger::Sensor>& sensors = lasermodel->GetSensors();
 
@@ -461,9 +530,9 @@ StageNode::WorldCallback()
                 }
 
                 if (robotmodel->lasermodels.size() > 1)
-                    msg.header.frame_id = mapName("base_laser_link", r, s, static_cast<Stg::Model*>(robotmodel->positionmodel));
+                    msg.header.frame_id = mapName(this->laser_frame.c_str(), r, s, static_cast<Stg::Model*>(robotmodel->positionmodel));
                 else
-                    msg.header.frame_id = mapName("base_laser_link", r, static_cast<Stg::Model*>(robotmodel->positionmodel));
+                    msg.header.frame_id = mapName(this->laser_frame.c_str(), r, static_cast<Stg::Model*>(robotmodel->positionmodel));
 
                 msg.header.stamp = sim_time;
                 robotmodel->laser_pubs[s].publish(msg);
@@ -478,19 +547,19 @@ StageNode::WorldCallback()
 
             if (robotmodel->lasermodels.size() > 1)
                 tf.sendTransform(tf::StampedTransform(txLaser, sim_time,
-                                                      mapName("base_link", r, static_cast<Stg::Model*>(robotmodel->positionmodel)),
-                                                      mapName("base_laser_link", r, s, static_cast<Stg::Model*>(robotmodel->positionmodel))));
+                                                      mapName(this->base_frame.c_str(), r, static_cast<Stg::Model*>(robotmodel->positionmodel)),
+                                                      mapName(this->laser_frame.c_str(), r, s, static_cast<Stg::Model*>(robotmodel->positionmodel))));
             else
                 tf.sendTransform(tf::StampedTransform(txLaser, sim_time,
-                                                      mapName("base_link", r, static_cast<Stg::Model*>(robotmodel->positionmodel)),
-                                                      mapName("base_laser_link", r, static_cast<Stg::Model*>(robotmodel->positionmodel))));
+                                                      mapName(this->base_frame.c_str(), r, static_cast<Stg::Model*>(robotmodel->positionmodel)),
+                                                      mapName(this->laser_frame.c_str(), r, static_cast<Stg::Model*>(robotmodel->positionmodel))));
         }
 
         //the position of the robot
         tf.sendTransform(tf::StampedTransform(tf::Transform::getIdentity(),
                                               sim_time,
-                                              mapName("base_footprint", r, static_cast<Stg::Model*>(robotmodel->positionmodel)),
-                                              mapName("base_link", r, static_cast<Stg::Model*>(robotmodel->positionmodel))));
+                                              mapName(this->base_footprint_frame.c_str(), r, static_cast<Stg::Model*>(robotmodel->positionmodel)),
+                                              mapName(this->base_frame.c_str(), r, static_cast<Stg::Model*>(robotmodel->positionmodel))));
 
         // Get latest odometry data
         // Translate into ROS message format and publish
@@ -517,7 +586,7 @@ StageNode::WorldCallback()
         tf::Transform txOdom(odomQ, tf::Point(odom_msg.pose.pose.position.x, odom_msg.pose.pose.position.y, 0.0));
         tf.sendTransform(tf::StampedTransform(txOdom, sim_time,
                                               mapName("odom", r, static_cast<Stg::Model*>(robotmodel->positionmodel)),
-                                              mapName("base_footprint", r, static_cast<Stg::Model*>(robotmodel->positionmodel))));
+                                              mapName(this->base_footprint_frame.c_str(), r, static_cast<Stg::Model*>(robotmodel->positionmodel))));
 
         // Also publish the ground truth pose and velocity
         Stg::Pose gpose = robotmodel->positionmodel->GetGlobalPose();
@@ -671,11 +740,11 @@ StageNode::WorldCallback()
 
                 if (robotmodel->cameramodels.size() > 1)
                     tf.sendTransform(tf::StampedTransform(tr, sim_time,
-                                                          mapName("base_link", r, static_cast<Stg::Model*>(robotmodel->positionmodel)),
+                                                          mapName(this->base_frame.c_str(), r, static_cast<Stg::Model*>(robotmodel->positionmodel)),
                                                           mapName("camera", r, s, static_cast<Stg::Model*>(robotmodel->positionmodel))));
                 else
                     tf.sendTransform(tf::StampedTransform(tr, sim_time,
-                                                          mapName("base_link", r, static_cast<Stg::Model*>(robotmodel->positionmodel)),
+                                                          mapName(this->base_frame.c_str(), r, static_cast<Stg::Model*>(robotmodel->positionmodel)),
                                                           mapName("camera", r, static_cast<Stg::Model*>(robotmodel->positionmodel))));
 
                 sensor_msgs::CameraInfo camera_msg;
@@ -730,6 +799,40 @@ StageNode::WorldCallback()
     clock_msg.clock = sim_time;
     this->clock_pub_.publish(clock_msg);
 }
+
+
+#if NEW_GUI_ACCESS
+void
+StageNode::Speedup(double speedup)
+{
+  if (this->worldgui) {
+    ROS_INFO("Setting simulation speedup = %.1f",speedup);
+    this->worldgui->setSpeedup(speedup);
+  }
+}
+
+void 
+StageNode::Footprints()
+{
+  if (this->worldgui) {
+    Stg::Canvas* c = this->worldgui->GetCanvas();
+    c->showFootprints.set(true);
+  }
+}
+
+void 
+StageNode::Screenshot()
+{
+  if (this->worldgui) {
+    Stg::Canvas* c = this->worldgui->GetCanvas();
+
+    c->showScreenshots.set(true);
+    ros::Duration(2.0).sleep();
+    c->showScreenshots.set(false);
+  }
+}
+#endif
+
 
 int 
 main(int argc, char** argv)
