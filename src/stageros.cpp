@@ -33,6 +33,9 @@
 #include <unistd.h>
 #include <signal.h>
 
+// boost
+#include <boost/algorithm/string/split.hpp>
+#include <boost/algorithm/string.hpp>
 
 // libstage
 #include <stage.hh>
@@ -310,8 +313,16 @@ void StageNode::GUIRequest_cb(const boost::shared_ptr<std_msgs::String const>& m
         Screenshot();
     else if (msg->data=="footprints")
         Footprints();
-    else if (msg->data=="speedup")
-        Speedup(2.0);
+    else if (msg->data.substr(0,7)=="speedup") {
+	std::vector<std::string> pp;
+        boost::split(pp, msg->data, boost::is_any_of("_"));
+	float s=1.0;
+	if (pp.size()>1) {
+	  s = atof(pp[1].c_str());
+	  if (s<1e-6) s=1.0;
+	}
+        Speedup(s);
+    }
 #endif
 }
 
