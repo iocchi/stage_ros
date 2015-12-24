@@ -63,22 +63,22 @@
 #include "tf/transform_broadcaster.h"
 
 #define USAGE "stageros <worldfile>"
+
+// Topics
 #define IMAGE "image"
 #define DEPTH "depth"
 #define CAMERA_INFO "camera_info"
 #define ODOM "odom"
-
 #define BASE_POSE_GROUND_TRUTH "base_pose_ground_truth"
 #define CMD_VEL "cmd_vel"
+#define LASER_TOPIC_DEFAULT  "base_scan"
 
-// default values
-// Topics
-#define LASER_TOPIC_DEFAULT  "scan"
 // Frames
-#define BASE_FRAME_DEFAULT   "base_frame" 
-#define BASE_FOOTPRINT_FRAME_DEFAULT   "base_footprint_frame" 
-#define LASER_FRAME_DEFAULT  "laser_frame"
-#define CAMERA_FRAME_DEFAULT "camera_frame"
+#define BASE_FRAME_DEFAULT   "base_link" 
+#define BASE_FOOTPRINT_FRAME_DEFAULT   "base_footprint" 
+#define LASER_FRAME_DEFAULT  "base_laser_link"
+#define CAMERA_FRAME_DEFAULT "camera_link"
+#define ODOM_FRAME_DEFAULT   "odom"
 
 // Our node
 class StageNode
@@ -130,7 +130,7 @@ private:
     bool isDepthCanonical;
     bool use_model_names;
 
-    std::string base_frame, base_footprint_frame, laser_topic, laser_frame, camera_frame;
+    std::string base_frame, base_footprint_frame, laser_topic, laser_frame, camera_frame, odom_frame;
 
     // A helper function that is executed for each stage model.  We use it
     // to search for models of interest.
@@ -350,6 +350,8 @@ StageNode::StageNode(int argc, char** argv, bool gui, const char* fname, bool us
         this->laser_frame = LASER_FRAME_DEFAULT;
     if(!localn.getParam("camera_frame", this->camera_frame))
         this->camera_frame = CAMERA_FRAME_DEFAULT;
+    if(!localn.getParam("odom_frame", this->odom_frame))
+        this->odom_frame = ODOM_FRAME_DEFAULT;
 
 
     // We'll check the existence of the world file, because libstage doesn't
@@ -586,7 +588,7 @@ StageNode::WorldCallback()
         //@todo Publish stall on a separate topic when one becomes available
         //this->odomMsgs[r].stall = this->positionmodels[r]->Stall();
         //
-        odom_msg.header.frame_id = mapName("odom", r, static_cast<Stg::Model*>(robotmodel->positionmodel));
+        odom_msg.header.frame_id = mapName(this->odom_frame.c_str() , r, static_cast<Stg::Model*>(robotmodel->positionmodel));
         odom_msg.header.stamp = sim_time;
 
         robotmodel->odom_pub.publish(odom_msg);
@@ -596,7 +598,7 @@ StageNode::WorldCallback()
         tf::quaternionMsgToTF(odom_msg.pose.pose.orientation, odomQ);
         tf::Transform txOdom(odomQ, tf::Point(odom_msg.pose.pose.position.x, odom_msg.pose.pose.position.y, 0.0));
         tf.sendTransform(tf::StampedTransform(txOdom, sim_time,
-                                              mapName("odom", r, static_cast<Stg::Model*>(robotmodel->positionmodel)),
+                                              mapName(this->odom_frame.c_str(), r, static_cast<Stg::Model*>(robotmodel->positionmodel)),
                                               mapName(this->base_footprint_frame.c_str(), r, static_cast<Stg::Model*>(robotmodel->positionmodel))));
 
         // Also publish the ground truth pose and velocity
@@ -633,7 +635,7 @@ StageNode::WorldCallback()
         ground_truth_msg.twist.twist.linear.z = gvel.z;
         ground_truth_msg.twist.twist.angular.z = gvel.a;
 
-        ground_truth_msg.header.frame_id = mapName("odom", r, static_cast<Stg::Model*>(robotmodel->positionmodel));
+        ground_truth_msg.header.frame_id = mapName(this->odom_frame.c_str(), r, static_cast<Stg::Model*>(robotmodel->positionmodel));
         ground_truth_msg.header.stamp = sim_time;
 
         robotmodel->ground_truth_pub.publish(ground_truth_msg);
